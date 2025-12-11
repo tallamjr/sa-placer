@@ -75,14 +75,14 @@ fn main() {
 
     let x_data_collection = Mutex::new(HashMap::new());
     let y_data_collection = Mutex::new(HashMap::new());
-    let render_collection = Mutex::new(HashMap::new());
+    // let render_collection = Mutex::new(HashMap::new());
     let final_solution_collection = Mutex::new(HashMap::new());
     let config_data_collection = configs_n_neighbors.clone();
 
     config_data_collection.par_iter().for_each(|&n_neighbors| {
         println!("Running SA Placer with {} neighbors", n_neighbors);
         let placer_output =
-            fast_sa_placer(initial_solution.clone(), n_steps, n_neighbors, false, true);
+            fast_sa_placer(initial_solution.clone(), n_steps, n_neighbors, false, false);
 
         let final_solution: PlacementSolution<'_> = placer_output.final_solution;
 
@@ -95,18 +95,17 @@ fn main() {
         x_data_collection.insert(n_neighbors, x_data);
         y_data_collection.insert(n_neighbors, y_data);
 
-        let mut render_collection = render_collection.lock().unwrap();
+        // let mut render_collection = render_collection.lock().unwrap();
         let mut final_solution_collection = final_solution_collection.lock().unwrap();
-        render_collection.insert(n_neighbors, placer_output.renderer.unwrap());
+        // render_collection.insert(n_neighbors, placer_output.renderer.unwrap());
         final_solution_collection.insert(n_neighbors, final_solution.clone());
     });
 
     // remove the mutexes
     let x_data_collection = x_data_collection.into_inner().unwrap();
     let y_data_collection = y_data_collection.into_inner().unwrap();
-
     let final_solution_collection = final_solution_collection.into_inner().unwrap();
-    let render_collection = render_collection.into_inner().unwrap();
+    // let render_collection = render_collection.into_inner().unwrap();
 
     // csv for each n_neighbors
     for n in config_data_collection.clone().iter() {
@@ -164,9 +163,6 @@ fn main() {
         .output()
         .expect("failed to execute process");
 
-    // render_solution_to_png(&selected_final_solution, "fpga_final_solution");
-
-    // selected_renderer.render_to_video("./placer_animation", 30.0, 20);
     config_data_collection.par_iter().for_each(|&n_neighbors| {
         let solution = final_solution_collection.get(&n_neighbors).unwrap();
         render_solution_to_png(
@@ -176,6 +172,7 @@ fn main() {
             false,
         );
 
+        // Video rendering (uncomment render_collection above to use)
         // let renderer: Renderer = render_collection.get(&n_neighbors).unwrap().clone();
         // renderer.render_to_video(
         //     &format!("placer_animation_{}", n_neighbors),
