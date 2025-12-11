@@ -162,6 +162,10 @@ impl<'a> PlacementSolution<'a> {
         }
     }
 
+    /// Bounding-box cost: sum of Manhattan distances for all edges
+    ///
+    /// This is the original cost function treating each edge independently.
+    /// Time complexity: O(E) where E is the number of edges.
     pub fn cost_bb(&self) -> f32 {
         let mut cost = 0;
 
@@ -183,6 +187,108 @@ impl<'a> PlacementSolution<'a> {
         }
 
         cost as f32
+    }
+
+    /// Half-Perimeter Wirelength (HPWL) cost function
+    ///
+    /// Groups edges by source node to form pseudo-nets and computes
+    /// the half-perimeter of the bounding box for each net.
+    ///
+    /// HPWL = sum over nets of (max_x - min_x + max_y - min_y)
+    ///
+    /// This is more accurate for multi-fanout nets than simple edge-based cost.
+    /// Time complexity: O(E) where E is the number of edges.
+    pub fn cost_hpwl(&self) -> f32 {
+        use rustworkx_core::petgraph::graph::NodeIndex;
+
+        // Group nodes by their source (forming pseudo-nets)
+        // Each source node and its destinations form a net
+        let mut nets: FxHashMap<NodeIndex, Vec<FPGALayoutCoordinate>> = FxHashMap::default();
+
+        for edge in self.netlist.graph.edge_references() {
+            let source_idx = edge.source();
+            let target_idx = edge.target();
+
+            let source = self.netlist.graph.node_weight(source_idx).unwrap();
+            let target = self.netlist.graph.node_weight(target_idx).unwrap();
+
+            let source_loc = *self.solution_map.get(source).unwrap();
+            let target_loc = *self.solution_map.get(target).unwrap();
+
+            // Add source and target to this net
+            let net = nets.entry(source_idx).or_default();
+            if net.is_empty() {
+                net.push(source_loc);
+            }
+            net.push(target_loc);
+        }
+
+        let mut total_hpwl: u32 = 0;
+
+        for coords in nets.values() {
+            if coords.len() < 2 {
+                continue;
+            }
+
+            let x_min = coords.iter().map(|c| c.x).min().unwrap();
+            let x_max = coords.iter().map(|c| c.x).max().unwrap();
+            let y_min = coords.iter().map(|c| c.y).min().unwrap();
+            let y_max = coords.iter().map(|c| c.y).max().unwrap();
+
+            total_hpwl += (x_max - x_min) + (y_max - y_min);
+        }
+
+        total_hpwl as f32
+    }
+
+    /// Incremental cost update after moving a single node
+    ///
+    /// Instead of recomputing the full cost, this computes only the
+    /// delta caused by moving one node. Much faster for SA where
+    /// we make one move per iteration.
+    ///
+    /// Returns the new cost given the current cost and the move.
+    pub fn incremental_cost_delta(
+        &self,
+        node: &NetlistNode,
+        old_location: &FPGALayoutCoordinate,
+        new_location: &FPGALayoutCoordinate,
+    ) -> i32 {
+        use rustworkx_core::petgraph::Direction;
+
+        let mut delta: i32 = 0;
+
+        // Find the node index for this node
+        let node_idx = self
+            .netlist
+            .graph
+            .node_indices()
+            .find(|&idx| self.netlist.graph[idx] == *node);
+
+        if let Some(idx) = node_idx {
+            // Check all edges connected to this node (both incoming and outgoing)
+            for neighbor_idx in self
+                .netlist
+                .graph
+                .neighbors_directed(idx, Direction::Outgoing)
+                .chain(self.netlist.graph.neighbors_directed(idx, Direction::Incoming))
+            {
+                let neighbor = &self.netlist.graph[neighbor_idx];
+                let neighbor_loc = self.solution_map.get(neighbor).unwrap();
+
+                // Old contribution
+                let old_dist = old_location.x.abs_diff(neighbor_loc.x) as i32
+                    + old_location.y.abs_diff(neighbor_loc.y) as i32;
+
+                // New contribution
+                let new_dist = new_location.x.abs_diff(neighbor_loc.x) as i32
+                    + new_location.y.abs_diff(neighbor_loc.y) as i32;
+
+                delta += new_dist - old_dist;
+            }
+        }
+
+        delta
     }
 
     pub fn render_svg(&self) -> String {
@@ -670,4 +776,324 @@ pub fn fast_sa_placer(
         y_cost,
         renderer: if render { Some(renderer) } else { None },
     }
+}
+
+// ============================================================================
+// TRUE SIMULATED ANNEALING IMPLEMENTATION
+// ============================================================================
+
+/// Cooling schedule strategies for simulated annealing
+#[derive(Debug, Clone, Copy)]
+pub enum CoolingSchedule {
+    /// Geometric cooling: T_{k+1} = alpha * T_k
+    /// Recommended alpha in [0.9, 0.99]
+    Geometric { alpha: f64 },
+
+    /// Linear cooling: T_{k+1} = T_k - beta
+    /// beta is computed from initial_temp / n_steps
+    Linear { beta: f64 },
+
+    /// Logarithmic cooling: T_k = T_0 / ln(k + 2)
+    /// Theoretically optimal but very slow
+    Logarithmic,
+
+    /// Adaptive cooling based on acceptance ratio
+    /// Increases temp if acceptance too low, decreases if too high
+    Adaptive {
+        target_acceptance: f64,
+        adjustment_factor: f64,
+    },
+}
+
+impl CoolingSchedule {
+    /// Create a geometric cooling schedule with the given alpha
+    pub fn geometric(alpha: f64) -> Self {
+        assert!(alpha > 0.0 && alpha < 1.0, "Alpha must be in (0, 1)");
+        CoolingSchedule::Geometric { alpha }
+    }
+
+    /// Create a linear cooling schedule given initial temp and total steps
+    pub fn linear(initial_temp: f64, n_steps: u32) -> Self {
+        let beta = initial_temp / n_steps as f64;
+        CoolingSchedule::Linear { beta }
+    }
+
+    /// Create a logarithmic cooling schedule
+    pub fn logarithmic() -> Self {
+        CoolingSchedule::Logarithmic
+    }
+
+    /// Create an adaptive cooling schedule
+    pub fn adaptive(target_acceptance: f64, adjustment_factor: f64) -> Self {
+        CoolingSchedule::Adaptive {
+            target_acceptance,
+            adjustment_factor,
+        }
+    }
+
+    /// Compute next temperature given current state
+    pub fn next_temperature(
+        &self,
+        current_temp: f64,
+        initial_temp: f64,
+        step: u32,
+        acceptance_ratio: f64,
+    ) -> f64 {
+        match self {
+            CoolingSchedule::Geometric { alpha } => current_temp * alpha,
+            CoolingSchedule::Linear { beta } => (current_temp - beta).max(0.001),
+            CoolingSchedule::Logarithmic => initial_temp / ((step + 2) as f64).ln(),
+            CoolingSchedule::Adaptive {
+                target_acceptance,
+                adjustment_factor,
+            } => {
+                if acceptance_ratio < *target_acceptance {
+                    // Too few acceptances, increase temperature
+                    current_temp * (1.0 + adjustment_factor)
+                } else {
+                    // Enough acceptances, decrease temperature
+                    current_temp * (1.0 - adjustment_factor)
+                }
+            }
+        }
+    }
+}
+
+/// Extended output for true SA placer with additional statistics
+#[derive(Clone)]
+pub struct SAPlacerOutput<'a> {
+    pub initial_solution: PlacementSolution<'a>,
+    pub final_solution: PlacementSolution<'a>,
+    pub best_solution: PlacementSolution<'a>,
+    pub x_steps: Vec<u32>,
+    pub y_cost: Vec<f32>,
+    pub y_temperature: Vec<f64>,
+    pub y_acceptance_ratio: Vec<f64>,
+    pub total_accepted: u32,
+    pub total_rejected: u32,
+    pub uphill_accepted: u32,
+    pub renderer: Option<Renderer>,
+}
+
+/// Estimate initial temperature using random walk sampling
+///
+/// Samples random moves and computes a temperature such that
+/// the acceptance probability for an average uphill move equals
+/// the target acceptance ratio (typically 0.8 for initial temp).
+pub fn estimate_initial_temperature(
+    solution: &PlacementSolution,
+    target_acceptance: f64,
+    sample_size: usize,
+) -> f64 {
+    let mut rng = rand::thread_rng();
+    let actions = [PlacementAction::Move, PlacementAction::Swap];
+
+    let mut positive_deltas = Vec::with_capacity(sample_size);
+
+    for _ in 0..sample_size {
+        let mut candidate = solution.clone();
+        let action = actions.choose(&mut rng).unwrap();
+        candidate.action(*action);
+
+        let delta = candidate.cost_bb() - solution.cost_bb();
+        if delta > 0.0 {
+            positive_deltas.push(delta as f64);
+        }
+    }
+
+    if positive_deltas.is_empty() {
+        return 1000.0; // Default if no uphill moves found
+    }
+
+    let avg_delta: f64 = positive_deltas.iter().sum::<f64>() / positive_deltas.len() as f64;
+
+    // Solve: exp(-avg_delta / T) = target_acceptance
+    // T = -avg_delta / ln(target_acceptance)
+    -avg_delta / target_acceptance.ln()
+}
+
+/// True Simulated Annealing placer with Metropolis-Hastings acceptance criterion
+///
+/// Unlike `fast_sa_placer`, this implementation:
+/// - Accepts worse solutions with probability exp(-delta/T)
+/// - Implements proper temperature cooling schedules
+/// - Can escape local optima through probabilistic uphill moves
+///
+/// # Arguments
+/// * `initial_solution` - Starting placement
+/// * `n_steps` - Number of SA iterations
+/// * `initial_temp` - Starting temperature (use `estimate_initial_temperature` if unsure)
+/// * `cooling_schedule` - Temperature reduction strategy
+/// * `verbose` - Print progress every 100 steps
+/// * `render` - Generate SVG frames for animation
+///
+/// # Returns
+/// Extended output with temperature and acceptance statistics
+pub fn true_sa_placer<'a>(
+    initial_solution: PlacementSolution<'a>,
+    n_steps: u32,
+    initial_temp: f64,
+    cooling_schedule: CoolingSchedule,
+    verbose: bool,
+    render: bool,
+) -> SAPlacerOutput<'a> {
+    let mut renderer = Renderer::new();
+    let mut rng = rand::thread_rng();
+
+    let mut current_solution = initial_solution.clone();
+    let mut best_solution = initial_solution.clone();
+    let mut best_cost = current_solution.cost_bb();
+
+    let mut temperature = initial_temp;
+
+    let actions = [PlacementAction::Move, PlacementAction::Swap];
+
+    // Statistics tracking
+    let mut x_steps = Vec::with_capacity(n_steps as usize);
+    let mut y_cost = Vec::with_capacity(n_steps as usize);
+    let mut y_temperature = Vec::with_capacity(n_steps as usize);
+    let mut y_acceptance_ratio = Vec::with_capacity(n_steps as usize);
+
+    let mut total_accepted: u32 = 0;
+    let mut total_rejected: u32 = 0;
+    let mut uphill_accepted: u32 = 0;
+
+    // Window for acceptance ratio calculation
+    let window_size = 100;
+    let mut recent_accepted = 0u32;
+    let mut recent_total = 0u32;
+
+    for i in 0..n_steps {
+        let current_cost = current_solution.cost_bb();
+
+        // Record statistics
+        x_steps.push(i);
+        y_cost.push(current_cost);
+        y_temperature.push(temperature);
+
+        let acceptance_ratio = if recent_total > 0 {
+            recent_accepted as f64 / recent_total as f64
+        } else {
+            1.0
+        };
+        y_acceptance_ratio.push(acceptance_ratio);
+
+        if render {
+            renderer.add_frame(current_solution.render_svg());
+        }
+
+        // Generate single neighbour (classical SA uses one neighbour per step)
+        let mut candidate = current_solution.clone();
+        let action = actions.choose(&mut rng).unwrap();
+        candidate.action(*action);
+
+        let candidate_cost = candidate.cost_bb();
+        let delta = candidate_cost - current_cost;
+
+        // Metropolis-Hastings acceptance criterion
+        let accept = if delta < 0.0 {
+            // Always accept improvements
+            true
+        } else if temperature > 0.0 {
+            // Accept worse solutions with probability exp(-delta/T)
+            let probability = (-(delta as f64) / temperature).exp();
+            rng.gen::<f64>() < probability
+        } else {
+            false
+        };
+
+        // Update acceptance window
+        recent_total += 1;
+        if recent_total > window_size {
+            recent_total = window_size;
+            recent_accepted = (recent_accepted as f64 * 0.99) as u32;
+        }
+
+        if accept {
+            current_solution = candidate;
+            total_accepted += 1;
+            recent_accepted += 1;
+
+            if delta > 0.0 {
+                uphill_accepted += 1;
+            }
+
+            // Track best solution found
+            if candidate_cost < best_cost {
+                best_solution = current_solution.clone();
+                best_cost = candidate_cost;
+            }
+        } else {
+            total_rejected += 1;
+        }
+
+        // Update temperature according to cooling schedule
+        temperature = cooling_schedule.next_temperature(
+            temperature,
+            initial_temp,
+            i,
+            acceptance_ratio,
+        );
+
+        if verbose && i % 100 == 0 {
+            println!(
+                "Step {}: cost={:.1}, temp={:.2}, acceptance={:.2}%, uphill={}",
+                i,
+                current_cost,
+                temperature,
+                acceptance_ratio * 100.0,
+                uphill_accepted
+            );
+        }
+    }
+
+    if render {
+        renderer.add_frame(current_solution.render_svg());
+    }
+
+    SAPlacerOutput {
+        initial_solution: initial_solution.clone(),
+        final_solution: current_solution,
+        best_solution,
+        x_steps,
+        y_cost,
+        y_temperature,
+        y_acceptance_ratio,
+        total_accepted,
+        total_rejected,
+        uphill_accepted,
+        renderer: if render { Some(renderer) } else { None },
+    }
+}
+
+/// Hybrid placer: Greedy descent followed by SA refinement
+///
+/// This combines the speed of greedy descent with SA's ability
+/// to escape local optima.
+pub fn hybrid_placer<'a>(
+    initial_solution: PlacementSolution<'a>,
+    greedy_steps: u32,
+    sa_steps: u32,
+    initial_temp: f64,
+    cooling_schedule: CoolingSchedule,
+    verbose: bool,
+) -> SAPlacerOutput<'a> {
+    // Phase 1: Fast greedy descent
+    if verbose {
+        println!("Phase 1: Greedy descent ({} steps)", greedy_steps);
+    }
+    let greedy_output = fast_sa_placer(initial_solution.clone(), greedy_steps, 3, false, false);
+
+    // Phase 2: SA refinement
+    if verbose {
+        println!("Phase 2: SA refinement ({} steps)", sa_steps);
+    }
+    true_sa_placer(
+        greedy_output.final_solution,
+        sa_steps,
+        initial_temp,
+        cooling_schedule,
+        verbose,
+        false,
+    )
 }
