@@ -6,6 +6,10 @@ _"Compiling!" - The universal excuse. In our case, we're waiting for placement o
 
 ---
 
+**TL;DR:** We tested whether simulated annealing's "annealing" is actually necessary for FPGA placement. On synthetic benchmarks, greedy descent wins. On real circuits, SA wins by up to 28%. The answer depends entirely on problem structure.
+
+---
+
 Stefan Abi-Karam's [FPGA placement project](https://stefanabikaram.com/writing/fpga-sa-placer/) makes a provocative claim: _"simulated annealing (SA) is a misnomer as you don't really need the 'annealing' part to make it work."_ This post documents our attempt to test that claim by implementing true simulated annealing alongside the original greedy descent, building the machinery needed to answer the question empirically.
 
 ---
@@ -264,10 +268,10 @@ True SA is faster per iteration because it evaluates only one neighbour per step
 
 | Algorithm | Final Cost | Reduction | Winner |
 | --------- | ---------- | --------- | ------ |
-| Greedy    | 29,836     | 62.4%     | Yes    |
-| True SA   | 31,467     | 60.3%     | No     |
+| Greedy    | ~29,000    | 61.8%     | Yes    |
+| True SA   | ~30,500    | 59.8%     | No     |
 
-**Greedy wins by 5.2%** even when SA gets proportionally more iterations to match the computational budget.
+**Greedy wins by ~5%** even when SA gets proportionally more iterations to match the computational budget.
 
 ### Cost Function Performance
 
@@ -282,7 +286,7 @@ HPWL is roughly 4x slower due to the grouping operation, but still sub-milliseco
 
 ## Test Coverage
 
-We added 23 unit tests to verify correctness. The critical test proves our SA actually accepts uphill moves:
+We added 25 unit tests to verify correctness. The critical test proves our SA actually accepts uphill moves:
 
 ```rust
 #[test]
@@ -301,10 +305,10 @@ fn test_true_sa_accepts_uphill_moves() {
 }
 ```
 
-All 23 tests pass:
+All 25 tests pass:
 
 ```
-test result: ok. 23 passed; 0 failed; 0 ignored
+test result: ok. 25 passed; 0 failed; 0 ignored
 ```
 
 ---
@@ -413,8 +417,8 @@ cargo run --release --bin benchmark
 
 | Benchmark | Nodes | Movable | Nets | Greedy Reduction | SA Reduction | Winner |
 |-----------|-------|---------|------|------------------|--------------|--------|
-| primary1  | 833   | 752     | 902  | 31.4%           | **50.9%**    | SA by 28.5% |
-| IBM05     | 29,347| 28,146  | 28,446| 2.6%           | **10.3%**    | SA by 7.9% |
+| primary1  | 833   | 752     | 902  | 30.9%           | **50.5%**    | SA by 28.4% |
+| IBM05     | 29,347| 28,146  | 28,446| 2.6%           | **10.4%**    | SA by 8.0% |
 
 > [!IMPORTANT]
 > On real circuits, **True SA dramatically outperforms greedy descent**. This completely reverses the findings from synthetic benchmarks.
@@ -434,7 +438,7 @@ The synthetic Erdos-Renyi graphs have uniform random connectivity, resulting in 
 ### The Real Verdict
 
 > [!WARNING]
-> **Stefan's claim does NOT generalise to real circuits.** While greedy descent wins on synthetic benchmarks, true simulated annealing is significantly better (up to 28.5%) on real circuit netlists.
+> **Stefan's claim does NOT generalise to real circuits.** While greedy descent wins on synthetic benchmarks, true simulated annealing is significantly better (up to 28%) on real circuit netlists.
 
 This validates the theoretical motivation for SA: the ability to accept uphill moves is crucial for escaping local optima in rugged cost landscapes characteristic of real VLSI designs.
 
@@ -464,11 +468,11 @@ This validates the theoretical motivation for SA: the ability to accept uphill m
 ### Key Findings
 
 **On Synthetic Benchmarks (Erdos-Renyi graphs):**
-- Greedy descent outperforms true SA by 5.2% with equal computational budget
+- Greedy descent outperforms true SA by ~5% with equal computational budget
 - Stefan's original claim is empirically supported for synthetic data
 
 **On Real Circuit Benchmarks (ISPD/IBM):**
-- **True SA outperforms greedy descent** by up to 28.5%
+- **True SA outperforms greedy descent** by up to 28%
 - SA's ability to escape local optima is crucial for real VLSI designs
 - Stefan's claim does NOT generalise to real circuits
 
