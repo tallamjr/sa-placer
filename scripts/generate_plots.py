@@ -66,6 +66,42 @@ def load_comparison_data() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame] | 
     return None
 
 
+def plot_convergence_all_neighbors_xkcd(data: dict[int, pl.DataFrame]) -> None:
+    """Recreate fpga_placer_history.png in xkcd style."""
+    with plt.xkcd(scale=1, length=100, randomness=2):
+        fig, ax = plt.subplots(figsize=(14, 8))
+
+        # Colour cycle for different n_neighbors
+        colors = [PURPLE, '#2E8B57', '#20B2AA', GREY, ORANGE,
+                  GREEN, CORAL, 'black', '#FF69B4']
+
+        for i, (n, df) in enumerate(sorted(data.items())):
+            steps = df['step'].to_numpy()
+            costs = df['obj_fn_value'].to_numpy()
+            color = colors[i % len(colors)]
+            ax.plot(steps, costs, linewidth=2, label=f'{n} neighbours', color=color)
+
+        ax.set_xlabel('step', fontsize=14)
+        ax.set_ylabel('objective function value', fontsize=14)
+        ax.set_title('greedy descent convergence: all configurations\n(monotonically decreasing = no uphill moves)',
+                     fontsize=16, pad=15)
+        ax.legend(fontsize=11, loc='upper right', ncol=2)
+        ax.set_xlim(0, 1000)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        # Add annotation about monotonicity
+        ax.annotate('all curves only go DOWN\n(pure greedy behaviour)',
+                    xy=(600, 45000), fontsize=12,
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, pad=0.5))
+
+        plt.tight_layout()
+        plt.savefig(FIGURES_DIR / 'convergence_all_neighbors.png', dpi=150,
+                    bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"Saved: {FIGURES_DIR / 'convergence_all_neighbors.png'}")
+
+
 def plot_final_cost_vs_neighbors_xkcd(data: dict[int, pl.DataFrame]) -> None:
     """Bar chart with xkcd styling."""
     with plt.xkcd(scale=1, length=100, randomness=2):
@@ -503,6 +539,7 @@ def main() -> None:
 
     # Generate plots that use greedy sweep data
     if data:
+        plot_convergence_all_neighbors_xkcd(data)
         plot_final_cost_vs_neighbors_xkcd(data)
         plot_monotonicity_evidence_xkcd()
 
