@@ -328,8 +328,8 @@ uv run scripts/generate_plots.py
 To run the real circuit comparison, first download the benchmarks:
 
 ```bash
-# Create benchmarks directory and download
-mkdir -p benchmarks && cd benchmarks
+# Create data directory and download circuit benchmarks
+mkdir -p data && cd data
 
 # Download primary1 (small, 833 nodes)
 curl -L -o primary1.tar.gz "http://vlsicad.ucsd.edu/GSRC/bookshelf/Slots/Placement/TESTCASES/p1UnitWDims.tar.gz"
