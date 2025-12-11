@@ -1097,3 +1097,356 @@ pub fn hybrid_placer<'a>(
         false,
     )
 }
+
+// ============================================================================
+// UNIT TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper to create a small test layout and netlist
+    fn create_test_setup() -> (FPGALayout, NetlistGraph) {
+        let layout = build_simple_fpga_layout(16, 16);
+        let netlist = build_simple_netlist(20, 4, 4);
+        (layout, netlist)
+    }
+
+    // -------------------------------------------------------------------------
+    // PlacementSolution tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_random_placement_is_valid() {
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_random_placement(&layout, &netlist);
+        assert!(solution.valid(), "Random placement should be valid");
+    }
+
+    #[test]
+    fn test_greedy_placement_is_valid() {
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_greedy_placement(&layout, &netlist);
+        assert!(solution.valid(), "Greedy placement should be valid");
+    }
+
+    #[test]
+    fn test_all_nodes_placed() {
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_random_placement(&layout, &netlist);
+
+        let node_count = netlist.graph.node_count();
+        let placed_count = solution.solution_map.len();
+
+        assert_eq!(
+            node_count, placed_count,
+            "All nodes should be placed"
+        );
+    }
+
+    #[test]
+    fn test_no_location_reuse() {
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_random_placement(&layout, &netlist);
+
+        let mut locations = FxHashSet::default();
+        for loc in solution.solution_map.values() {
+            assert!(
+                !locations.contains(loc),
+                "No location should be used twice"
+            );
+            locations.insert(*loc);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Cost function tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_cost_bb_non_negative() {
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_random_placement(&layout, &netlist);
+
+        let cost = solution.cost_bb();
+        assert!(cost >= 0.0, "Cost should be non-negative");
+    }
+
+    #[test]
+    fn test_cost_hpwl_non_negative() {
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_random_placement(&layout, &netlist);
+
+        let cost = solution.cost_hpwl();
+        assert!(cost >= 0.0, "HPWL cost should be non-negative");
+    }
+
+    #[test]
+    fn test_hpwl_less_than_or_equal_bb() {
+        // HPWL should typically be <= BB cost for multi-fanout nets
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_random_placement(&layout, &netlist);
+
+        let bb_cost = solution.cost_bb();
+        let hpwl_cost = solution.cost_hpwl();
+
+        // This relationship holds when nets have fanout > 1
+        // For simple 2-pin nets, they should be approximately equal
+        assert!(
+            hpwl_cost <= bb_cost * 1.1, // Allow 10% tolerance
+            "HPWL ({}) should be roughly <= BB cost ({})",
+            hpwl_cost,
+            bb_cost
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Action tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_move_maintains_validity() {
+        let (layout, netlist) = create_test_setup();
+        let mut solution = gen_random_placement(&layout, &netlist);
+
+        for _ in 0..50 {
+            solution.action_move();
+            assert!(solution.valid(), "Move should maintain validity");
+        }
+    }
+
+    #[test]
+    fn test_swap_maintains_validity() {
+        let (layout, netlist) = create_test_setup();
+        let mut solution = gen_random_placement(&layout, &netlist);
+
+        for _ in 0..50 {
+            solution.action_swap();
+            assert!(solution.valid(), "Swap should maintain validity");
+        }
+    }
+
+    #[test]
+    fn test_move_directed_maintains_validity() {
+        let (layout, netlist) = create_test_setup();
+        let mut solution = gen_random_placement(&layout, &netlist);
+
+        for _ in 0..50 {
+            solution.action_move_directed();
+            assert!(solution.valid(), "MoveDirected should maintain validity");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Cooling schedule tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_geometric_cooling() {
+        let schedule = CoolingSchedule::geometric(0.95);
+        let temp = schedule.next_temperature(100.0, 100.0, 0, 0.5);
+        assert!((temp - 95.0).abs() < 0.001, "Geometric cooling should multiply by alpha");
+    }
+
+    #[test]
+    fn test_linear_cooling() {
+        let schedule = CoolingSchedule::linear(100.0, 100);
+        let temp = schedule.next_temperature(100.0, 100.0, 0, 0.5);
+        assert!((temp - 99.0).abs() < 0.001, "Linear cooling should subtract beta");
+    }
+
+    #[test]
+    fn test_logarithmic_cooling() {
+        let schedule = CoolingSchedule::logarithmic();
+        let temp1 = schedule.next_temperature(100.0, 100.0, 0, 0.5);
+        let temp2 = schedule.next_temperature(100.0, 100.0, 100, 0.5);
+
+        assert!(temp1 > temp2, "Temperature should decrease over steps");
+    }
+
+    #[test]
+    fn test_adaptive_cooling_increases_when_acceptance_low() {
+        let schedule = CoolingSchedule::adaptive(0.5, 0.1);
+
+        // Acceptance ratio 0.2 < target 0.5, should increase temp
+        let temp = schedule.next_temperature(100.0, 100.0, 0, 0.2);
+        assert!(temp > 100.0, "Should increase temp when acceptance is low");
+    }
+
+    #[test]
+    fn test_adaptive_cooling_decreases_when_acceptance_high() {
+        let schedule = CoolingSchedule::adaptive(0.5, 0.1);
+
+        // Acceptance ratio 0.8 > target 0.5, should decrease temp
+        let temp = schedule.next_temperature(100.0, 100.0, 0, 0.8);
+        assert!(temp < 100.0, "Should decrease temp when acceptance is high");
+    }
+
+    // -------------------------------------------------------------------------
+    // Temperature estimation tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_temperature_estimation_positive() {
+        let (layout, netlist) = create_test_setup();
+        let solution = gen_random_placement(&layout, &netlist);
+
+        let temp = estimate_initial_temperature(&solution, 0.8, 100);
+        assert!(temp > 0.0, "Estimated temperature should be positive");
+    }
+
+    // -------------------------------------------------------------------------
+    // Placer algorithm tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_fast_sa_reduces_cost() {
+        let (layout, netlist) = create_test_setup();
+        let initial = gen_random_placement(&layout, &netlist);
+        let initial_cost = initial.cost_bb();
+
+        let output = fast_sa_placer(initial, 500, 3, false, false);
+        let final_cost = output.final_solution.cost_bb();
+
+        assert!(
+            final_cost <= initial_cost,
+            "Greedy descent should not increase cost: {} -> {}",
+            initial_cost,
+            final_cost
+        );
+    }
+
+    #[test]
+    fn test_fast_sa_monotonic_descent() {
+        let (layout, netlist) = create_test_setup();
+        let initial = gen_random_placement(&layout, &netlist);
+
+        let output = fast_sa_placer(initial, 200, 3, false, false);
+
+        // Check that cost never increases (greedy property)
+        for i in 1..output.y_cost.len() {
+            assert!(
+                output.y_cost[i] <= output.y_cost[i - 1],
+                "Greedy descent should be monotonic at step {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_true_sa_accepts_uphill() {
+        let (layout, netlist) = create_test_setup();
+        let initial = gen_random_placement(&layout, &netlist);
+
+        // Use high initial temperature to encourage uphill moves
+        let temp = estimate_initial_temperature(&initial, 0.9, 100);
+        let output = true_sa_placer(
+            initial,
+            1000,
+            temp * 2.0, // High temp
+            CoolingSchedule::geometric(0.995),
+            false,
+            false,
+        );
+
+        assert!(
+            output.uphill_accepted > 0,
+            "True SA should accept some uphill moves"
+        );
+    }
+
+    #[test]
+    fn test_true_sa_improves_solution() {
+        let (layout, netlist) = create_test_setup();
+        let initial = gen_random_placement(&layout, &netlist);
+        let initial_cost = initial.cost_bb();
+
+        let temp = estimate_initial_temperature(&initial, 0.8, 100);
+        let output = true_sa_placer(
+            initial,
+            2000,
+            temp,
+            CoolingSchedule::geometric(0.995),
+            false,
+            false,
+        );
+
+        // Best solution should be better than or equal to initial
+        assert!(
+            output.best_solution.cost_bb() <= initial_cost,
+            "SA should find solution no worse than initial"
+        );
+    }
+
+    #[test]
+    fn test_true_sa_tracks_best() {
+        let (layout, netlist) = create_test_setup();
+        let initial = gen_random_placement(&layout, &netlist);
+
+        let temp = estimate_initial_temperature(&initial, 0.8, 100);
+        let output = true_sa_placer(
+            initial,
+            500,
+            temp,
+            CoolingSchedule::geometric(0.99),
+            false,
+            false,
+        );
+
+        // Best should be <= final (SA might end at a worse point)
+        assert!(
+            output.best_solution.cost_bb() <= output.final_solution.cost_bb(),
+            "Best should be <= final solution"
+        );
+    }
+
+    #[test]
+    fn test_hybrid_placer() {
+        let (layout, netlist) = create_test_setup();
+        let initial = gen_random_placement(&layout, &netlist);
+        let initial_cost = initial.cost_bb();
+
+        let output = hybrid_placer(
+            initial,
+            200,  // greedy steps
+            500,  // SA steps
+            500.0,
+            CoolingSchedule::geometric(0.99),
+            false,
+        );
+
+        assert!(
+            output.best_solution.cost_bb() <= initial_cost,
+            "Hybrid should improve on initial"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Statistics tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sa_output_statistics() {
+        let (layout, netlist) = create_test_setup();
+        let initial = gen_random_placement(&layout, &netlist);
+
+        let output = true_sa_placer(
+            initial,
+            100,
+            1000.0,
+            CoolingSchedule::geometric(0.95),
+            false,
+            false,
+        );
+
+        assert_eq!(output.x_steps.len(), 100, "Should have 100 step records");
+        assert_eq!(output.y_cost.len(), 100, "Should have 100 cost records");
+        assert_eq!(output.y_temperature.len(), 100, "Should have 100 temp records");
+        assert_eq!(
+            output.total_accepted + output.total_rejected,
+            100,
+            "Accepted + rejected should equal steps"
+        );
+    }
+}
