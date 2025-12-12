@@ -1,6 +1,8 @@
 # Extending the SA-Placer
 
-> This write is based on the super interesting article: https://stefanabikaram.com/writing/fpga-sa-placer/
+> This write up is based on the super interesting article:
+> https://stefanabikaram.com/writing/fpga-sa-placer/ and completed in part with
+> the help of my mate, Claude.
 
 [![xkcd: Compiling](https://imgs.xkcd.com/comics/compiling.png)](https://xkcd.com/303/)
 
