@@ -294,7 +294,7 @@ def plot_cost_landscape_3d() -> None:
     """3D surface plot showing local minima landscape."""
     from mpl_toolkits.mplot3d import Axes3D
 
-    fig = plt.figure(figsize=(14, 6))
+    fig = plt.figure(figsize=(16, 7))
 
     # Left: 2D cross-section
     ax1 = fig.add_subplot(121)
@@ -312,29 +312,35 @@ def plot_cost_landscape_3d() -> None:
         global_min_x = 8.5
         global_min_y = y[int(global_min_x * 50)]
 
-        ax1.scatter(local_min_x, local_min_y, s=150, c=ORANGE, zorder=5,
+        ax1.scatter(local_min_x, local_min_y, s=200, c=ORANGE, zorder=5,
                    label='local minima', edgecolor='black', linewidth=2)
-        ax1.scatter([global_min_x], [global_min_y], s=200, c=GREEN, zorder=5,
+        ax1.scatter([global_min_x], [global_min_y], s=350, c=GREEN, zorder=5,
                    label='global minimum', edgecolor='black', linewidth=2, marker='*')
 
+        # Repositioned annotations to avoid title overlap
         ax1.annotate('greedy gets\nstuck here',
                     xy=(local_min_x[0], local_min_y[0]),
-                    xytext=(local_min_x[0] + 0.8, local_min_y[0] + 3.5),
-                    fontsize=12, color=ORANGE,
-                    arrowprops=dict(arrowstyle='->', color=ORANGE, lw=2))
+                    xytext=(local_min_x[0] + 1.8, local_min_y[0] + 1.0),
+                    fontsize=13, color=ORANGE, fontweight='bold',
+                    arrowprops=dict(arrowstyle='->', color=ORANGE, lw=2.5),
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                             edgecolor=ORANGE, alpha=0.9))
 
         ax1.annotate('SA might\nescape!',
                     xy=(3.0, y[150]),
-                    xytext=(2.0, y[150] + 3),
-                    fontsize=12, color=CORAL,
-                    arrowprops=dict(arrowstyle='->', color=CORAL, lw=2,
-                                   connectionstyle='arc3,rad=0.3'))
+                    xytext=(4.8, y[100] - 1.5),
+                    fontsize=13, color=CORAL, fontweight='bold',
+                    arrowprops=dict(arrowstyle='->', color=CORAL, lw=2.5,
+                                   connectionstyle='arc3,rad=0.2'),
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                             edgecolor=CORAL, alpha=0.9))
 
         ax1.set_xlabel('solution space', fontsize=14)
         ax1.set_ylabel('cost', fontsize=14)
-        ax1.set_title('cost landscape (1D slice)', fontsize=16)
-        ax1.legend(loc='upper right', fontsize=11)
+        ax1.set_title('cost landscape (1D slice)', fontsize=18, pad=15)
+        ax1.legend(loc='upper right', fontsize=12)
         ax1.set_xlim(0, 10)
+        ax1.set_ylim(y.min() - 1, y.max() + 2)  # Dynamic limits to show all points
         ax1.set_yticklabels([])
         ax1.spines['top'].set_visible(False)
         ax1.spines['right'].set_visible(False)
@@ -351,27 +357,29 @@ def plot_cost_landscape_3d() -> None:
     Z = (X**2 + Y**2) + 2 * (1 - np.cos(2*np.pi*X)) + 2 * (1 - np.cos(2*np.pi*Y))
     Z = Z / Z.max() * 20 + 5  # Scale to reasonable range
 
-    surf = ax2.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8,
+    surf = ax2.plot_surface(X, Y, Z, cmap='viridis', alpha=0.75,
                            linewidth=0, antialiased=True)
 
-    # Mark global minimum
-    ax2.scatter([0], [0], [Z.min()], color=GREEN, s=200, marker='*',
-               edgecolor='black', linewidth=1, zorder=10)
+    # Mark global minimum with larger marker
+    ax2.scatter([0], [0], [Z.min() + 0.5], color=GREEN, s=400, marker='*',
+               edgecolor='black', linewidth=2, zorder=10, label='global minimum')
 
-    # Mark some local minima
+    # Mark some local minima with larger markers
     local_x = [1, -1, 1, -1]
     local_y = [1, 1, -1, -1]
-    for lx, ly in zip(local_x, local_y):
+    for i, (lx, ly) in enumerate(zip(local_x, local_y)):
         idx_x = int((lx + 3) / 6 * 99)
         idx_y = int((ly + 3) / 6 * 99)
-        ax2.scatter([lx], [ly], [Z[idx_y, idx_x]], color=ORANGE, s=100,
-                   marker='o', edgecolor='black', linewidth=1, zorder=10)
+        label = 'local minima' if i == 0 else None
+        ax2.scatter([lx], [ly], [Z[idx_y, idx_x] + 0.5], color=ORANGE, s=180,
+                   marker='o', edgecolor='black', linewidth=2, zorder=10, label=label)
 
-    ax2.set_xlabel('x', fontsize=12)
-    ax2.set_ylabel('y', fontsize=12)
-    ax2.set_zlabel('cost', fontsize=12)
-    ax2.set_title('3D cost landscape\n(many local minima!)', fontsize=16)
-    ax2.view_init(elev=25, azim=45)
+    ax2.set_xlabel('x', fontsize=13, labelpad=8)
+    ax2.set_ylabel('y', fontsize=13, labelpad=8)
+    ax2.set_zlabel('cost', fontsize=13, labelpad=8)
+    ax2.set_title('3D cost landscape\n(many local minima!)', fontsize=18, pad=10)
+    ax2.view_init(elev=30, azim=45)
+    ax2.legend(loc='upper left', fontsize=11)
 
     plt.tight_layout()
     plt.savefig(FIGURES_DIR / 'cost_landscape_intuition.png', dpi=150,

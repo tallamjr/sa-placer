@@ -886,7 +886,13 @@ pub fn estimate_initial_temperature(
     sample_size: usize,
 ) -> f64 {
     let mut rng = rand::thread_rng();
-    let actions = [PlacementAction::Move, PlacementAction::Swap];
+    // Use all three actions for fair comparison with greedy placer
+    // MoveDirected is Stefan's domain-specific heuristic that moves nodes toward centroid
+    let actions = [
+        PlacementAction::Move,
+        PlacementAction::Swap,
+        PlacementAction::MoveDirected,
+    ];
 
     let mut positive_deltas = Vec::with_capacity(sample_size);
 
@@ -946,7 +952,13 @@ pub fn true_sa_placer<'a>(
 
     let mut temperature = initial_temp;
 
-    let actions = [PlacementAction::Move, PlacementAction::Swap];
+    // Use all three actions for fair comparison with greedy placer
+    // MoveDirected is Stefan's domain-specific heuristic that moves nodes toward centroid
+    let actions = [
+        PlacementAction::Move,
+        PlacementAction::Swap,
+        PlacementAction::MoveDirected,
+    ];
 
     // Statistics tracking
     let mut x_steps = Vec::with_capacity(n_steps as usize);

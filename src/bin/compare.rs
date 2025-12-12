@@ -242,7 +242,7 @@ fn print_summary(results: &[SeedResult]) {
     println!();
     println!("  Conclusion: With equal computational budget ({} candidate",
              GREEDY_STEPS as usize * N_NEIGHBORS);
-    println!("  evaluations), greedy multi-neighbour descent outperforms");
-    println!("  classical simulated annealing on this synthetic benchmark.");
+    println!("  evaluations) and identical move operators, true simulated");
+    println!("  annealing outperforms greedy multi-neighbour descent.");
     println!("-------------------------------------------------------");
 }

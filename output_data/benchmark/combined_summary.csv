@@ -1,0 +1,3 @@
+benchmark,nodes,movable,terminals,nets,grid_size,avg_initial,avg_greedy,avg_sa_best,greedy_reduction_pct,sa_reduction_pct,winner,margin_pct
+p1UnitWDims,833,752,81,902,32,36249,25062,17942,30.9,50.5,sa,28.4
+ibm05WDims,29347,28146,1201,28446,304,19761274,19242066,17704410,2.6,10.4,sa,8.0
